@@ -1,0 +1,25 @@
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# ===== ROS 2 构建产物（上车后在车机生成，不入库）=====
+autocar_ws/build/
+autocar_ws/install/
+autocar_ws/log/
+
+# ===== 运行期产物 =====
+autocar_ws/maps/*
+!autocar_ws/maps/.gitkeep
+
+# ===== 生成报告（可重跑再生）=====
+autocar_ws/OFFLINE_REPORT.txt
+
+# ===== IDE / OS =====
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+*.swp

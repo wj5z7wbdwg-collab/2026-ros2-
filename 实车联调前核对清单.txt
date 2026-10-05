@@ -1,0 +1,308 @@
+# 实车联调前 · 最终核对清单（纯文本勾选版）
+
+**配套文档**：同目录《室外ROS无人车赛_设计技术文档_v2.1》（参数唯一来源，§9）、《ros小车.txt》
+　　　　　　`autocar_ws/RUNBOOK.md`（详细步骤）、`autocar_ws/CHECKLIST_实车联调前核对.md`（本文件的 Markdown 版）
+**车体**：北京小豚科技 HW-Autocar ｜ 昇腾 310（ARM64）｜ Ubuntu 22.04 + ROS 2 Humble
+**用法**：按关卡顺序执行，不得跳关——每一关是下一关的前提。全部打勾才发车。
+
+
+## 使用前提：三条必须知道的边界（本机交付的诚实声明）
+
+[x] 代码从未在车机上编译/运行过。全部在 Windows 上编写，只做过 py_compile 语法检查、
+    YAML 解析与判据级仿真。首次 colcon build 的报错必须人工看、人工修。
+    已缓解：新增 scripts/build_check.py（不装 ROS 也能跑的静态预检），已在交付机上把
+    "首跑必炸"的机械性引用错误（resource 标记 / 入口点 / data_files / launch 互引 /
+    msg 定义 / 依赖声明 / Node(executable=...) / 语法）全部核对通过（8 项 ok、0 FAIL）；
+    deploy.sh check 已内置本步。但它只是必要条件——ROS 依赖是否装齐、colcon build 能否
+    真过，仍需上车实测。
+    已缓解（v2.1 R78~R91）：新增 autocar_ws/tests/（mock 层真实功能测试，Windows 本机
+    可跑）——感知/视觉/规划/控制/赛事管理五板块共 276 项断言全过（含 50 Hz 闭环跟踪
+    仿真、ROLLING_SWITCH 六步时序、R59/R60/R61/R67/R68/R70/R72 全部完赛兜底链路），
+    并发现修复 14 处真实缺陷：R78 路径闭环误判/裁剪全丢、R79 模糊 PID 符号正反馈
+    （轴距小即发散判负）、R80 failsafe 幽灵里程，以及 R81~R91（挡板合并顺序、P 牌
+    四重校验、标定兜底加载、弯道限速仲裁、曲率/边距顺序、看门狗墙钟累计、TF 帧名
+    参数化、切换栈启动检查、switch.timeout 30s、encoder 断流幽灵里程、停车标志断流
+    置 unknown）。上限=单元测试级，不替代实车
+    deploy.sh all/smoke。
+[x] scripts/*.sh 从未做过 bash 语法检查（编写环境无 bash）→ 已解除：calib.sh、deploy.sh、
+    install_deps.sh、preflight.sh、record_ds05.sh 已用 bash -n 全部通过。首次运行若仍报
+    语法错，再执行 bash -n scripts/xxx.sh 定位问题。
+[ ] 依赖 ROS 的工具未在车上跑过：qos_check.py（在线模式）、calib.py、verify_map.py。
+    首次运行注意输出格式差异，必要时改用离线/手工方式兜底。
+
+
+## 第 0 关：上车前准备（工具与依赖）
+
+[ ] 卷尺（≥10 m）、角度尺、粉笔/胶带（地面标线）
+[ ] 底盘串口线、传感器线束齐全；电池电量足够跑完两圈 + 标定
+[ ] 供应商 SDK（LiDAR / IMU / 相机驱动）已就位，且知道包名与 launch 名
+[ ] 网络/远程终端可用（车机上多个 ros2 topic 命令需并行终端）
+[ ] Q4/Q5/Q6/Q7 的答复邮件已发出（设计文档附录 D.2.1 / D.5）
+
+命令：
+    bash ~/autocar_ws/scripts/install_deps.sh
+
+判据：无报错；ros2 pkg list | grep -E 'cartographer_ros|nav2_amcl|nav2_map_server|robot_localization' 全部命中。
+
+
+## 第 1 关：编译与静态检查（每次上车必做）
+
+[ ] colcon build 全绿，8 个包可见
+[ ] ROS 1 残留 = 0（否则 +100 s 罚时）
+[ ] 设备节点与串口权限正常
+
+命令：
+    python3 ~/autocar_ws/scripts/build_check.py   # 首次编译预检（不装 ROS 也能跑，应 0 FAIL）
+    python3 ~/autocar_ws/tests/test_perception.py # 全板块功能测试（mock 层，276 项断言）
+    python3 ~/autocar_ws/tests/test_visual.py
+    python3 ~/autocar_ws/tests/test_planning.py
+    python3 ~/autocar_ws/tests/test_control.py
+    python3 ~/autocar_ws/tests/test_race_manager.py   # 每个退出码 0 = 全过
+    cd ~/autocar_ws && colcon build --symlink-install
+    ros2 pkg list | grep autocar                  # 应见 8 个 autocar_* 包
+
+    bash ~/autocar_ws/scripts/deploy.sh all       # = build + check（check 已内置 build_check.py）
+    bash ~/autocar_ws/scripts/preflight.sh        # ROS1 残留 / 串口 / 话题 / TF
+
+判据：
+    · ls /opt/ros/ 只有 humble；ROS 1 环境变量 grep 无输出；
+      源码 grep 'rospy|roscpp|catkin|roslaunch|rostopic|rosnode|rosbag ' 无输出
+    · preflight.sh 的 ①②③ 段无 [FAIL]
+    · deploy.sh check 打印分级清单，退出码 1 属正常（fail-closed）
+
+
+## 第 2 关：传感器驱动（启动流程第 0 步，缺一别发车）
+
+race.launch.py 不含任何传感器驱动，四个话题全部由供应商件提供。缺任何一个都会静默失效。
+
+[ ] /scan              ≈ 10 Hz
+[ ] /imu/data          ≈ 100 Hz
+[ ] /camera/image_raw  ≈ 30 Hz
+[ ] /camera/camera_info 存在
+
+命令（择一）：
+    ros2 launch <供应商 bringup 包> <xxx_bringup.launch.py>
+    # 或
+    ros2 launch autocar_bringup sensors.launch.py lidar_pkg:=<LiDAR包> imu_pkg:=<IMU包> \
+        camera_pkg:=v4l2_camera camera_launch:=camera.launch.py
+
+    ros2 topic hz /scan ; ros2 topic hz /imu/data ; ros2 topic hz /camera/image_raw
+
+判据：四个话题必须存在且频率达标；话题名不对就用 -r 重映射对齐
+      /camera/image_raw + /camera/camera_info。
+注意：CSI（MIPI）相机 v4l2_camera 不可用，必须用供应商采集节点。
+
+
+## 第 3 关：阻塞项核对（Q1~Q12，设计文档附录 D.5）
+
+[ ] Q4（阿克曼轴距 L / 最大转向角）已答复
+[ ] Q5（舵机中位/满舵、HR-04 规格）已答复
+[ ] Q6（底盘接口语义：angular.z 是转角/角速度/PWM）已答复
+[ ] Q7（停车区域尺寸与三种区域关系）已答复
+[ ] 答复后只改 YAML，未改任何 Python 代码
+[ ] Q6 若改情形，两处都改了（见第 5 关末表，v2.1 R65）
+
+判据：bash scripts/deploy.sh check 无「跨文件一致性冲突」。
+
+
+## 第 4 关：物理测量标定（顺序不可颠倒）
+
+回填位置：autocar_ws/src/*/config/*.yaml；或启动时用 <参数>:=<值> 临时覆盖（不算标定）。
+改完 YAML 后 colcon build --symlink-install 或重启节点生效。
+
+### 4.1 IMU 静态检查（决定 imu0_differential 与去重力）
+
+命令：
+    ros2 topic echo /imu/data --field linear_acceleration --once
+    ros2 topic echo /imu/data --field angular_velocity
+
+[ ] az ≈ ±9.81  ⇒ imu0_remove_gravitational_acceleration: true （驱动未去重力）
+[ ] az ≈ 0      ⇒ 必须置 false，否则双重去重力污染 az
+[ ] 静置 60 s，ω_z 漂移 < 0.5°/s ⇒ 保持 imu0_differential: false；漂移大 ⇒ 改 true
+
+### 4.2 静态外参（双源参数，必须两处同时改，v2.1 R62）
+
+[ ] 卷尺量 laser_link / imu_link / camera_link 相对 base_link 的 x y z + 安装角
+[ ] RViz 复核 roll/pitch/yaw（看 /scan 与 /tf 是否歪斜）
+[ ] 回填运行值：autocar_ws/src/autocar_bringup/launch/race.launch.py 里 extrinsics 的
+    DeclareLaunchArgument 默认值
+[ ] 回填记录值：autocar_ws/src/autocar_bringup/config/static_transforms.yaml 的 extrinsics: 三行
+[ ] bash scripts/deploy.sh check 不再报 extrinsics.* FATAL
+
+警告：只填一处 = FATAL。填了记录文件、忘了 launch，运行时 TF 仍是 identity，
+      旧门禁会误报「已标定」。
+警告：不要用命令行覆盖当标定手段（每次重敲 18 个数，漏一个就静默退化成 identity）。
+
+### 4.3 舵机中位与满舵（Q5）
+
+命令：
+    ros2 topic pub --once /steering_angle std_msgs/msg/Float32 "{data: 0.0}"     # 中位
+    ros2 topic pub --once /steering_angle std_msgs/msg/Float32 "{data: 0.45}"    # 右满舵
+    ros2 topic pub --once /steering_angle std_msgs/msg/Float32 "{data: -0.45}"   # 左满舵
+
+[ ] 中位时车轮正对前进方向 ⇒ 否则调 servo.neutral_pwm（每次 ±10 µs）
+[ ] 角度尺量满舵实际转角 ⇒ 回填 max_steering_angle（占位 0.45 rad）
+[ ] 无尖叫/撞限位 ⇒ 否则减小 servo.max_pwm_delta
+
+### 4.4 阿克曼轴距（Q4）
+
+[ ] 量前轴中心到后轴中心水平距离 L
+[ ] 回填三处一致：planning.yaml / control.yaml / chassis_common.yaml
+[ ] path.min_turning_radius 留 0.0（由 L / tan(max_steering_angle) 现算）
+
+### 4.5 轮式里程标度（wheel.scale_factor，CR-20 前置）
+
+命令：
+    bash ~/autocar_ws/scripts/calib.sh odom
+
+[ ] 直行 10.00 m，误差 < 1%（脚本会打印回填行）
+[ ] 回填 wheel.scale_factor
+[ ] 并把 wheel.scale_calibrated 置 true（消除 P5 横幅；v2.1 R63）
+[ ] 若供应商回帧单位本就是 m/s，1.0 即为正确值 ⇒ 直接置 true
+
+### 4.6 单圈里程与发车区（CR-20）
+
+命令：
+    bash ~/autocar_ws/scripts/calib.sh lap        # 手动遥控跑完整一圈回到起点
+
+[ ] lap.lap_length ≠ 0
+[ ] lap.start_zone_rect、lap.start_yaw（发车区矩形与朝向）
+[ ] 前提：4.5 未标定时量出的单圈里程不可用（数值失真）
+
+### 4.7 区域与目标位姿（map 系，米/弧度）
+
+[ ] traffic.stop_point_x/y、traffic.approach_distance、traffic.exit_distance
+[ ] parking.zone_rect、parking.target_x/y/yaw
+[ ] vehicle.wheel_positions（「≥3 车轮入区」判据用）
+[ ] fold_zone.rect（赛道若有折线区）
+
+### 4.8 锥桶径向颜色阈值（可选，有兜底）
+
+[ ] 低速跑一圈，ros2 topic echo /cones 看 color 字段，
+    标定 color.radial_threshold + color.track_center_x/y
+[ ] 未标定也可：boundary.auto_calibrate=true 会走自标定径向兜底（auto_radial_split()）
+
+### 4.9 完赛保障兜底参数（v2.1 R67~R75，无需标定、默认已开启）
+
+这些是「零标定 / 部件故障时保证能完赛」的兜底开关（取舍统一为「优先完赛」：宁可 +20s/+30s
+罚时，也不接受判负 DNF）。赛前只需确认**仍是默认值、没被误关**：
+
+[ ] traffic.min_approach_travel = 2.0          （R67 先越光电传感器再停车）
+[ ] traffic_light.stop_hard_timeout = 90.0     （R72 TRAFFIC_STOP 最后硬超时放行）
+[ ] parking.abandon_done_travel = 10.0         （R68 放弃入库后跑够里程强制 DONE）
+[ ] parking.lap2_force_done = true             （R70 零标定下航向环绕判定第二圈完）
+[ ] bootstrap.enable = true                    （R69 无 /race_line 时直线蠕动防静止判负）
+[ ] bootstrap.wait_timeout = 3.0 < watchdog.static_timeout = 9.0   （否则看门狗先触发）
+[ ] bootstrap.hold_states 未被清空            （R71 清空 ⇒ IDLE 抢跑 / 红灯前闯红灯 +30s）
+[ ] min_boundary_points（planning.yaml）、board.min_length = 0.60（perception.yaml）（R73）
+[ ] 外部话题订阅端为 Best-Effort（R74/R75：/odometry/filtered /amcl_pose /submap_list；
+    对两种上游 QoS 均兼容）
+
+### 4.10 缺陷修复新增参数复核（v2.1 R81~R91，默认值已写入 YAML，赛前确认未被误改）
+
+[ ] switch.timeout = 30.0        （R89：旧 20 s 小于最坏分预算之和 ≈22.5 s，必被误中止）
+[ ] speed.curve_kappa = 0.5      （R84：弯道限速仲裁门限；0 = 关闭弯道档，不建议）
+[ ] watchdog.odom_stale = 1.0    （R86：odom 断流视为静止，墙钟累计防 FAIL-03 漏判）
+[ ] frames.map/odom/base_link    （R85：pure_pursuit / fuzzy_pid 帧名与实车 TF 树一致，
+    上车 view_frames 核对）
+[ ] parking.stale_timeout = 1.0  （R91：停车标志相机断流 → /parking_sign/state 置
+    unknown，防末帧 detected 误导入库）
+
+
+## 第 5 关：接口 / QoS / TF 逐端点核对
+
+[ ] qos_check.py 无 [FAIL]（逐端点判定，非模糊 grep）
+[ ] /watchdog/status 发布者只有 watchdog 一个
+[ ] TF 树完整：map → odom → base_link → {laser,imu,camera}_link，map→odom 无第二发布者
+[ ] 第二圈：/amcl 为 active 后 /scan ↔ amcl 无 [FAIL]，且 /amcl_pose 确有输出
+    （本工程对 /amcl_pose、/odometry/filtered、/submap_list 的订阅端已在 v2.1 R74 统一为
+     Best-Effort，对 Reliable / Best-Effort 两种上游发布者均兼容，故此处只看「有无数据」）
+[ ] Q6 双文件耦合：deploy.sh check 无一致性冲突（v2.1 R65）
+
+命令：
+    python3 ~/autocar_ws/scripts/qos_check.py          # 默认核对 5 个话题
+    ros2 topic info -v /watchdog/status                # Publisher count: 1
+    ros2 run tf2_tools view_frames                     # 生成 frames.pdf，肉眼确认
+    ros2 lifecycle get /amcl                           # 第二圈 active 后再跑 qos_check.py /scan
+
+警告：最致命的一处——nav2_amcl 订阅 /scan 的 QoS 由 Nav2 内部决定。若「发布者 best_effort
+      + 订阅者 reliable」，AMCL 静默收不到数据、无报错，第二圈直接失效。只能在第二圈核对。
+
+Q6 情形切换时必须成对改（v2.1 R65）：
+
+    情形                      底盘侧 scenario_*.yaml                    控制侧 control.yaml
+    A（angular.z=前轮转角）   kinematics.mode: delta                    steering.convention: delta
+                              drive.output: cmd_vel
+    B（angular.z=航向角速度） kinematics.mode: omega                     steering.convention: omega
+    C（仅接受 PWM）           drive.output: steering_angle              publish_steering_angle: true
+
+[ ] 换 scenario:= 时，上表同行两列都改了
+    —— 只改一处 ⇒ 静默的转向尺度错误（车会动、转向全错）
+
+
+## 第 6 关：无实车联调（simulate，先过这关再上真车）
+
+命令：
+    ros2 launch autocar_bringup race.launch.py scenario:=A simulate:=true
+
+simulate:=true 时驱动不发串口，只按 /cmd_vel 反推 /odom。
+
+[ ] /scan_filtered ≈ 10 Hz
+[ ] /cones        ≈ 10 Hz
+[ ] /race_line    ≈ 1 Hz
+[ ] /cmd_vel_raw  ≈ 50 Hz，/cmd_vel ≈ 50 Hz
+[ ] /race_state：IDLE → MAPPING
+[ ] /watchdog/status = True
+[ ] view_frames 树正确
+[ ] 建图栈可独立拉起：ros2 launch autocar_slam mapping_stack.launch.py
+    ⇒ /map_saver = active；ros2 service list | grep map_save 有 /map_save；
+      ros2 topic echo /map --once 有数据
+
+
+## 第 7 关：零标定兜底演练（唯一硬指标：能不能跑完两圈）
+
+目标：即使第 4 关一项都没做，车也必须能起步、走完两圈、正常停车结束。标定只影响名次。
+
+[ ] 完整跑通一次两圈：MAPPING → LAP1_COMPLETE → ROLLING_SWITCH（六步日志齐全、不停车）
+    → NAVIGATING → PARKING → DONE
+[ ] /race_lap 在第一圈末真的变成 2（R59 航向替身生效，不是卡在 1）
+[ ] 红绿灯三态（red/green/off）都实测过；off 落 SAFE_HOLD
+[ ] 入库「≥3 车轮入区」判据在实车上验证过
+[ ] 无静止 > 10 s（看门狗 static_timeout=9 s 未误伤）
+
+启动时应对照的告警（看到即说明「走的是哪条兜底」，不是故障）：
+
+    看到的 WARN                        说明                                        恢复主判据要标
+    P4 横幅（extrinsics.*）            静态外参全 0，TF 走 identity（安全降级）    第 4.2 关
+    P5 横幅（wheel.scale_calibrated=false） 里程标度未核对，只是静默标度误差       第 4.5 关
+    圈次兜底（R59）                    lap.lap_length 未标定 ⇒ 净航向环绕 ±2π 替身 第 4.6 关
+    入库兜底（R60）                    parking.target_*/zone_rect 未标定
+                                       ⇒ 视觉入口 + 里程/静止兜底                 第 4.7 关
+    红绿灯兜底（R61）                  traffic.stop_point_* 未标定
+                                       ⇒ 视觉入口 + 等待态分级超时放行            第 4.7 关
+
+
+## 第 8 关：合规与冻结证据
+
+[ ] 全程无 ros2 bag play（FAIL-04）
+[ ] ~/maps/race_map.pgm / .yaml / .pbstream 三文件落盘，且地图时间戳晚于发车时间（TR-08）
+[ ] python3 scripts/verify_map.py 判读地图有效（map.free_thresh 一致）
+[ ] 挡板保留、未删除（TR-08 / CR-13）
+[ ] 相机驱动在比赛启动流程第 0 步单独启动（已确认）
+[ ] 绿灯亮起才放行（PEN-03）
+[ ] DS-05 试录 30 s（须在经典栈稳定跑两圈后）：bash scripts/record_ds05.sh
+    ⇒ ros2 bag info 各话题帧数 > 0
+[ ] DS-05 只录原始话题（/scan /scan_filtered /odometry/filtered /imu/data /cmd_vel
+    /cmd_vel_raw /race_state /race_lap /tf /tf_static），不预存换算后的前轮转角 δ
+
+
+## 附：仍未闭环事项（在此登记，别当已解决）
+
+[ ] Q1~Q12 的答复（设计文档附录 D.5；A 组找组委会 / B 组找小豚科技）
+[ ] nav2_amcl 订阅 /scan 的实际 QoS（须第二圈实机核对）
+[ ] imu0_differential 取值（须实机 IMU 静置判定，见 4.1）
+[ ] 本清单全部命令在车机上的首次通过（本机未验证）
+
+
+核对人：__________    日期：__________    车号：__________
+结论：第 1~8 关全绿 [ ]   仅剩「附」中未闭环项 [ ]   存在阻塞项，不得发车 [ ]

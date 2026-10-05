@@ -1,0 +1,18 @@
+# 行尾锁定：车机脚本必须 LF（Windows 全局 autocrlf 会把 .sh 转 CRLF → bash 报错）
+*.sh    text eol=lf
+*.py    text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.msg   text eol=lf
+*.lua   text eol=lf
+*.rviz  text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.cfg   text eol=lf
+
+# 二进制
+*.pdf   binary
+*.pgm   binary
+*.png   binary
+*.jpg   binary
+*.bag   binary
